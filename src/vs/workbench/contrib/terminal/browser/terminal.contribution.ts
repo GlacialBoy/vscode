@@ -169,6 +169,11 @@ configurationRegistry.registerConfiguration({
 			type: 'number',
 			default: DEFAULT_LINE_HEIGHT
 		},
+		'terminal.integrated.minimumContrastRatio': {
+			description: nls.localize('terminal.integrated.minimumContrastRatio', "When set the foreground color of each cell will change to try meet the contrast ratio specified. Example values:\n\n- 1: The default, do nothing.\n- 4.5: Minimum for WCAG AA compliance.\n- 7: Minimum for WCAG AAA compliance.\n- 21: White on black or black on white."),
+			type: 'number',
+			default: 1
+		},
 		'terminal.integrated.fontWeight': {
 			type: 'string',
 			enum: ['normal', 'bold', '100', '200', '300', '400', '500', '600', '700', '800', '900'],
@@ -557,14 +562,14 @@ actionRegistry.registerWorkbenchAction(SyncActionDescriptor.create(FindPrevious,
 if (BrowserFeatures.clipboard.writeText) {
 	actionRegistry.registerWorkbenchAction(SyncActionDescriptor.create(CopyTerminalSelectionAction, CopyTerminalSelectionAction.ID, CopyTerminalSelectionAction.LABEL, {
 		primary: KeyMod.CtrlCmd | KeyCode.KEY_C,
-		win: { primary: KeyCode.Ctrl | KeyCode.KEY_C, secondary: [KeyCode.Ctrl | KeyCode.Shift | KeyCode.KEY_C] },
+		win: { primary: KeyMod.CtrlCmd | KeyCode.KEY_C, secondary: [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_C] },
 		linux: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_C }
 	}, ContextKeyExpr.and(KEYBINDING_CONTEXT_TERMINAL_TEXT_SELECTED, KEYBINDING_CONTEXT_TERMINAL_FOCUS)), 'Terminal: Copy Selection', category);
 }
 if (BrowserFeatures.clipboard.readText) {
 	actionRegistry.registerWorkbenchAction(SyncActionDescriptor.create(TerminalPasteAction, TerminalPasteAction.ID, TerminalPasteAction.LABEL, {
 		primary: KeyMod.CtrlCmd | KeyCode.KEY_V,
-		win: { primary: KeyCode.Ctrl | KeyCode.KEY_V, secondary: [KeyCode.Ctrl | KeyCode.Shift | KeyCode.KEY_V] },
+		win: { primary: KeyMod.CtrlCmd | KeyCode.KEY_V, secondary: [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_V] },
 		linux: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_V }
 	}, KEYBINDING_CONTEXT_TERMINAL_FOCUS), 'Terminal: Paste into Active Terminal', category);
 }

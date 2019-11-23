@@ -20,14 +20,14 @@ import { ActionRunner, IAction } from 'vs/base/common/actions';
 import { IFileService } from 'vs/platform/files/common/files';
 import { IPathData } from 'vs/platform/windows/common/windows';
 import { coalesce, firstOrDefault } from 'vs/base/common/arrays';
-import { ISaveOptions, IRevertOptions } from 'vs/workbench/services/workingCopy/common/workingCopyService';
 import { ITextFileSaveOptions, ITextFileService } from 'vs/workbench/services/textfile/common/textfiles';
 import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
 import { isEqual } from 'vs/base/common/resources';
+import { IPanel } from 'vs/workbench/common/panel';
 
 export const DirtyWorkingCopiesContext = new RawContextKey<boolean>('dirtyWorkingCopies', false);
 export const ActiveEditorContext = new RawContextKey<string | null>('activeEditor', null);
-export const ActiveEditorIsSaveableContext = new RawContextKey<boolean>('activeEditorIsSaveable', false);
+export const ActiveEditorIsReadonlyContext = new RawContextKey<boolean>('activeEditorIsReadonly', false);
 export const EditorsVisibleContext = new RawContextKey<boolean>('editorIsOpen', false);
 export const EditorPinnedContext = new RawContextKey<boolean>('editorPinned', false);
 export const EditorGroupActiveEditorDirtyContext = new RawContextKey<boolean>('groupActiveEditorDirty', false);
@@ -55,7 +55,7 @@ export const TEXT_DIFF_EDITOR_ID = 'workbench.editors.textDiffEditor';
  */
 export const BINARY_DIFF_EDITOR_ID = 'workbench.editors.binaryResourceDiffEditor';
 
-export interface IEditor {
+export interface IEditor extends IPanel {
 
 	/**
 	 * The assigned input of this editor.
@@ -98,19 +98,9 @@ export interface IEditor {
 	readonly onDidSizeConstraintsChange: Event<{ width: number; height: number; } | undefined>;
 
 	/**
-	 * Returns the unique identifier of this editor.
-	 */
-	getId(): string;
-
-	/**
 	 * Returns the underlying control of this editor.
 	 */
 	getControl(): IEditorControl | undefined;
-
-	/**
-	 * Asks the underlying control to focus.
-	 */
-	focus(): void;
 
 	/**
 	 * Finds out if this editor is visible or not.
@@ -277,6 +267,71 @@ export const enum Verbosity {
 	LONG
 }
 
+export const enum SaveReason {
+
+	/**
+	 * Explicit user gesture.
+	 */
+	EXPLICIT = 1,
+
+	/**
+	 * Auto save after a timeout.
+	 */
+	AUTO = 2,
+
+	/**
+	 * Auto save after editor focus change.
+	 */
+	FOCUS_CHANGE = 3,
+
+	/**
+	 * Auto save after window change.
+	 */
+	WINDOW_CHANGE = 4
+}
+
+export interface ISaveOptions {
+
+	/**
+	 * An indicator how the save operation was triggered.
+	 */
+	reason?: SaveReason;
+
+	/**
+	 * Forces to load the contents of the working copy
+	 * again even if the working copy is not dirty.
+	 */
+	force?: boolean;
+
+	/**
+	 * Instructs the save operation to skip any save participants.
+	 */
+	skipSaveParticipants?: boolean;
+
+	/**
+	 * A hint as to which file systems should be available for saving.
+	 */
+	availableFileSystems?: string[];
+}
+
+export interface IRevertOptions {
+
+	/**
+	 * Forces to load the contents of the working copy
+	 * again even if the working copy is not dirty.
+	 */
+	force?: boolean;
+
+	/**
+	 * A soft revert will clear dirty state of a working copy
+	 * but will not attempt to load it from its persisted state.
+	 *
+	 * This option may be used in scenarios where an editor is
+	 * closed and where we do not require to load the contents.
+	 */
+	soft?: boolean;
+}
+
 export interface IEditorInput extends IDisposable {
 
 	/**
@@ -330,9 +385,11 @@ export interface IEditorInput extends IDisposable {
 	isDirty(): boolean;
 
 	/**
-	 * Saves the editor.
+	 * Saves the editor. The provided groupId helps
+	 * implementors to e.g. preserve view state of the editor
+	 * and re-open it in the correct group after saving.
 	 */
-	save(options?: ISaveOptions): Promise<boolean>;
+	save(groupId: GroupIdentifier, options?: ISaveOptions): Promise<boolean>;
 
 	/**
 	 * Saves the editor to a different location. The provided groupId
@@ -374,38 +431,20 @@ export abstract class EditorInput extends Disposable implements IEditorInput {
 
 	private disposed: boolean = false;
 
-	/**
-	 * Returns the unique type identifier of this input.
-	 */
 	abstract getTypeId(): string;
 
-	/**
-	 * Returns the associated resource of this input if any.
-	 */
 	getResource(): URI | undefined {
 		return undefined;
 	}
 
-	/**
-	 * Returns the name of this input that can be shown to the user. Examples include showing the name of the input
-	 * above the editor area when the input is shown.
-	 */
 	getName(): string {
 		return `Editor ${this.getTypeId()}`;
 	}
 
-	/**
-	 * Returns the description of this input that can be shown to the user. Examples include showing the description of
-	 * the input above the editor area to the side of the name of the input.
-	 */
 	getDescription(verbosity?: Verbosity): string | undefined {
 		return undefined;
 	}
 
-	/**
-	 * Returns the title of this input that can be shown to the user. Examples include showing the title of
-	 * the input above the editor area as hover over the input label.
-	 */
 	getTitle(verbosity?: Verbosity): string {
 		return this.getName();
 	}
@@ -419,10 +458,10 @@ export abstract class EditorInput extends Disposable implements IEditorInput {
 	}
 
 	/**
-	 * Returns a descriptor suitable for telemetry events.
-	 *
-	 * Subclasses should extend if they can contribute.
-	 */
+	* Returns a descriptor suitable for telemetry events.
+	*
+	* Subclasses should extend if they can contribute.
+	*/
 	getTelemetryDescriptor(): { [key: string]: unknown } {
 		/* __GDPR__FRAGMENT__
 			"EditorTelemetryDescriptor" : {
@@ -438,46 +477,26 @@ export abstract class EditorInput extends Disposable implements IEditorInput {
 	 */
 	abstract resolve(): Promise<IEditorModel | null>;
 
-	/**
-	 * Returns if this input is readonly or not.
-	 */
 	isReadonly(): boolean {
-		// Subclasses need to explicitly opt-in to being editable.
-		return !this.isDirty();
+		return true;
 	}
 
-	/**
-	 * Returns if the input is an untitled editor or not.
-	 */
 	isUntitled(): boolean {
-		// Subclasses need to explicitly opt-in to being untitled.
 		return false;
 	}
 
-	/**
-	 * An editor that is dirty will be asked to be saved once it closes.
-	 */
 	isDirty(): boolean {
 		return false;
 	}
 
-	/**
-	 * Saves the editor if it is dirty. Subclasses return a promise with a boolean indicating the success of the operation.
-	 */
-	save(options?: ISaveOptions): Promise<boolean> {
+	save(groupId: GroupIdentifier, options?: ISaveOptions): Promise<boolean> {
 		return Promise.resolve(true);
 	}
 
-	/**
-	 * Saves the editor to a different location.
-	 */
 	saveAs(groupId: GroupIdentifier, options?: ISaveOptions): Promise<boolean> {
 		return Promise.resolve(true);
 	}
 
-	/**
-	 * Reverts the editor if it is dirty. Subclasses return a promise with a boolean indicating the success of the operation.
-	 */
 	revert(options?: IRevertOptions): Promise<boolean> {
 		return Promise.resolve(true);
 	}
@@ -489,24 +508,14 @@ export abstract class EditorInput extends Disposable implements IEditorInput {
 		return true;
 	}
 
-	/**
-	 * Returns true if this input is identical to the otherInput.
-	 */
 	matches(otherInput: unknown): boolean {
 		return this === otherInput;
 	}
 
-	/**
-	 * Returns whether this input was disposed or not.
-	 */
 	isDisposed(): boolean {
 		return this.disposed;
 	}
 
-	/**
-	 * Called when an editor input is no longer needed. Allows to free up any resources taken by
-	 * resolving the editor input.
-	 */
 	dispose(): void {
 		this.disposed = true;
 		this._onDispose.fire();
@@ -530,15 +539,19 @@ export abstract class TextEditorInput extends EditorInput {
 		return this.resource;
 	}
 
-	save(options?: ITextFileSaveOptions): Promise<boolean> {
+	async save(groupId: GroupIdentifier, options?: ITextFileSaveOptions): Promise<boolean> {
+		if (this.isReadonly()) {
+			return false; // return early if editor is readonly
+		}
+
 		return this.textFileService.save(this.resource, options);
 	}
 
 	saveAs(group: GroupIdentifier, options?: ITextFileSaveOptions): Promise<boolean> {
-		return this.doSaveAs(group, options);
+		return this.doSaveAs(group, () => this.textFileService.saveAs(this.resource, undefined, options));
 	}
 
-	protected async doSaveAs(group: GroupIdentifier, options?: ITextFileSaveOptions, replaceAllEditors?: boolean): Promise<boolean> {
+	protected async doSaveAs(group: GroupIdentifier, saveRunnable: () => Promise<URI | undefined>, replaceAllEditors?: boolean): Promise<boolean> {
 
 		// Preserve view state by opening the editor first. In addition
 		// this allows the user to review the contents of the editor.
@@ -549,7 +562,7 @@ export abstract class TextEditorInput extends EditorInput {
 		}
 
 		// Save as
-		const target = await this.textFileService.saveAs(this.resource, undefined, options);
+		const target = await saveRunnable();
 		if (!target) {
 			return false; // save cancelled
 		}
@@ -557,10 +570,10 @@ export abstract class TextEditorInput extends EditorInput {
 		// Replace editor preserving viewstate (either across all groups or
 		// only selected group) if the target is different from the current resource
 		if (!isEqual(target, this.resource)) {
-			const replacement: IResourceInput = { resource: target, options: { pinned: true, viewState } };
+			const replacement = this.editorService.createInput({ resource: target });
 			const targetGroups = replaceAllEditors ? this.editorGroupService.groups.map(group => group.id) : [group];
 			for (const group of targetGroups) {
-				await this.editorService.replaceEditors([{ editor: { resource: this.resource }, replacement }], group);
+				await this.editorService.replaceEditors([{ editor: this, replacement, options: { pinned: true, viewState } }], group);
 			}
 		}
 
@@ -667,8 +680,8 @@ export class SideBySideEditorInput extends EditorInput {
 		return this.master.isDirty();
 	}
 
-	save(options?: ISaveOptions): Promise<boolean> {
-		return this.master.save(options);
+	save(groupId: GroupIdentifier, options?: ISaveOptions): Promise<boolean> {
+		return this.master.save(groupId, options);
 	}
 
 	saveAs(groupId: GroupIdentifier, options?: ISaveOptions): Promise<boolean> {

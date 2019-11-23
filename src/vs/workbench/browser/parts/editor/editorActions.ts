@@ -6,7 +6,7 @@
 import * as nls from 'vs/nls';
 import { Action } from 'vs/base/common/actions';
 import { mixin } from 'vs/base/common/objects';
-import { IEditorInput, EditorInput, IEditorIdentifier, IEditorCommandsContext, CloseDirection } from 'vs/workbench/common/editor';
+import { IEditorInput, EditorInput, IEditorIdentifier, IEditorCommandsContext, CloseDirection, SaveReason } from 'vs/workbench/common/editor';
 import { QuickOpenEntryGroup } from 'vs/base/parts/quickopen/browser/quickOpenModel';
 import { EditorQuickOpenEntry, EditorQuickOpenEntryGroup, IEditorQuickOpenEntry, QuickOpenAction } from 'vs/workbench/browser/quickopen';
 import { IQuickOpenService } from 'vs/platform/quickOpen/common/quickOpen';
@@ -23,6 +23,7 @@ import { DisposableStore } from 'vs/base/common/lifecycle';
 import { IWorkspacesService } from 'vs/platform/workspaces/common/workspaces';
 import { IFileDialogService, ConfirmResult } from 'vs/platform/dialogs/common/dialogs';
 import { IWorkingCopyService } from 'vs/workbench/services/workingCopy/common/workingCopyService';
+import { ResourceMap, values } from 'vs/base/common/map';
 
 export class ExecuteCommandAction extends Action {
 
@@ -639,17 +640,32 @@ export abstract class BaseCloseAllAction extends Action {
 			return undefined;
 		}));
 
-		const confirm = await this.fileDialogService.showSaveConfirm(this.workingCopyService.getDirty().map(copy => copy.resource));
+		const dirtyEditorsToConfirmByName = new Set<string>();
+		const dirtyEditorsToConfirmByResource = new ResourceMap();
+
+		for (const editor of this.editorService.editors) {
+			if (!editor.isDirty()) {
+				continue; // only interested in dirty editors
+			}
+
+			const resource = editor.getResource();
+			if (resource) {
+				dirtyEditorsToConfirmByResource.set(resource, true);
+			} else {
+				dirtyEditorsToConfirmByName.add(editor.getName());
+			}
+		}
+
+		const confirm = await this.fileDialogService.showSaveConfirm([...dirtyEditorsToConfirmByResource.keys(), ...values(dirtyEditorsToConfirmByName)]);
 		if (confirm === ConfirmResult.CANCEL) {
 			return;
 		}
 
 		let saveOrRevert: boolean;
 		if (confirm === ConfirmResult.DONT_SAVE) {
-			await this.editorService.revertAll({ soft: true });
-			saveOrRevert = true;
+			saveOrRevert = await this.editorService.revertAll({ soft: true, includeUntitled: true });
 		} else {
-			saveOrRevert = await this.editorService.saveAll({ includeUntitled: true });
+			saveOrRevert = await this.editorService.saveAll({ reason: SaveReason.EXPLICIT, includeUntitled: true });
 		}
 
 		if (saveOrRevert) {

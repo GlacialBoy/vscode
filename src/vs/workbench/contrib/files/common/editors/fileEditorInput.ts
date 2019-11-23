@@ -7,8 +7,7 @@ import { localize } from 'vs/nls';
 import { createMemoizer } from 'vs/base/common/decorators';
 import { dirname } from 'vs/base/common/resources';
 import { URI } from 'vs/base/common/uri';
-import { EncodingMode, IFileEditorInput, ITextEditorModel, Verbosity, TextEditorInput } from 'vs/workbench/common/editor';
-import { IRevertOptions } from 'vs/workbench/services/workingCopy/common/workingCopyService';
+import { EncodingMode, IFileEditorInput, ITextEditorModel, Verbosity, TextEditorInput, IRevertOptions } from 'vs/workbench/common/editor';
 import { TextFileEditorModel } from 'vs/workbench/services/textfile/common/textFileEditorModel';
 import { BinaryEditorModel } from 'vs/workbench/common/editor/binaryEditorModel';
 import { FileOperationError, FileOperationResult, IFileService, FileSystemProviderCapabilities } from 'vs/platform/files/common/files';
@@ -217,7 +216,7 @@ export class FileEditorInput extends TextEditorInput implements IFileEditorInput
 			return localize('orphanedFile', "{0} (deleted)", label);
 		}
 
-		if (model?.isReadonly()) {
+		if (this.isReadonly()) {
 			return localize('readonlyFile', "{0} (read-only)", label);
 		}
 
@@ -225,7 +224,9 @@ export class FileEditorInput extends TextEditorInput implements IFileEditorInput
 	}
 
 	isReadonly(): boolean {
-		return this.fileService.hasCapability(this.resource, FileSystemProviderCapabilities.Readonly);
+		const model = this.textFileService.models.get(this.resource);
+
+		return model?.isReadonly() || this.fileService.hasCapability(this.resource, FileSystemProviderCapabilities.Readonly);
 	}
 
 	isDirty(): boolean {

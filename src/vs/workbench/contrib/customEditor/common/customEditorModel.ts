@@ -7,8 +7,8 @@ import { Emitter, Event } from 'vs/base/common/event';
 import { Disposable } from 'vs/base/common/lifecycle';
 import { URI } from 'vs/base/common/uri';
 import { ICustomEditorModel, CustomEditorEdit } from 'vs/workbench/contrib/customEditor/common/customEditor';
-import { IRevertOptions, ISaveOptions, WorkingCopyCapabilities } from 'vs/workbench/services/workingCopy/common/workingCopyService';
-
+import { WorkingCopyCapabilities } from 'vs/workbench/services/workingCopy/common/workingCopyService';
+import { ISaveOptions, IRevertOptions } from 'vs/workbench/common/editor';
 
 export class CustomEditorModel extends Disposable implements ICustomEditorModel {
 
@@ -33,7 +33,7 @@ export class CustomEditorModel extends Disposable implements ICustomEditorModel 
 	}
 
 	public isDirty(): boolean {
-		return this._edits.length > 0 && this._savePoint !== this._edits.length;
+		return this._edits.length > 0 && this._savePoint !== this._currentEditIndex;
 	}
 
 	protected readonly _onDidChangeDirty: Emitter<void> = this._register(new Emitter<void>());
@@ -41,14 +41,17 @@ export class CustomEditorModel extends Disposable implements ICustomEditorModel 
 
 	//#endregion
 
-	protected readonly _onUndo = this._register(new Emitter<CustomEditorEdit>());
-	readonly onUndo: Event<CustomEditorEdit> = this._onUndo.event;
+	protected readonly _onUndo = this._register(new Emitter<readonly CustomEditorEdit[]>());
+	readonly onUndo = this._onUndo.event;
 
-	protected readonly _onRedo = this._register(new Emitter<CustomEditorEdit>());
-	readonly onRedo: Event<CustomEditorEdit> = this._onRedo.event;
+	protected readonly _onRedo = this._register(new Emitter<readonly CustomEditorEdit[]>());
+	readonly onRedo = this._onRedo.event;
+
+	protected readonly _onWillSave = this._register(new Emitter<{ waitUntil: (until: Promise<any>) => void }>());
+	readonly onWillSave = this._onWillSave.event;
 
 	public makeEdit(data: string): void {
-		this._edits.splice(this._currentEditIndex, this._edits.length - this._currentEditIndex, data);
+		this._edits.splice(this._currentEditIndex + 1, this._edits.length - this._currentEditIndex, data);
 		this._currentEditIndex = this._edits.length - 1;
 		this.updateDirty();
 	}
@@ -57,18 +60,39 @@ export class CustomEditorModel extends Disposable implements ICustomEditorModel 
 		this._onDidChangeDirty.fire();
 	}
 
-	public async save(options?: ISaveOptions) {
-		this._savePoint = this._edits.length;
+	public async save(_options?: ISaveOptions): Promise<boolean> {
+		const untils: Promise<any>[] = [];
+		const handler = { waitUntil: (until: Promise<any>) => untils.push(until) };
+
+		try {
+			this._onWillSave.fire(handler);
+			await Promise.all(untils);
+		} catch {
+			return false;
+		}
+
+		this._savePoint = this._currentEditIndex;
 		this.updateDirty();
 
 		return true;
 	}
 
-	public async revert(options?: IRevertOptions) {
-		while (this._currentEditIndex > 0) {
-			this.undo();
+	public async revert(_options?: IRevertOptions) {
+		if (this._currentEditIndex === this._savePoint) {
+			return true;
 		}
 
+		if (this._currentEditIndex >= this._savePoint) {
+			const editsToUndo = this._edits.slice(this._savePoint, this._currentEditIndex);
+			this._onUndo.fire(editsToUndo.reverse());
+		} else if (this._currentEditIndex < this._savePoint) {
+			const editsToRedo = this._edits.slice(this._currentEditIndex, this._savePoint);
+			this._onRedo.fire(editsToRedo);
+		}
+
+		this._currentEditIndex = this._savePoint;
+		this._edits.splice(this._currentEditIndex + 1, this._edits.length - this._currentEditIndex);
+		this.updateDirty();
 		return true;
 	}
 
@@ -80,7 +104,7 @@ export class CustomEditorModel extends Disposable implements ICustomEditorModel 
 
 		const undoneEdit = this._edits[this._currentEditIndex];
 		--this._currentEditIndex;
-		this._onUndo.fire(undoneEdit);
+		this._onUndo.fire([undoneEdit]);
 
 		this.updateDirty();
 	}
@@ -93,10 +117,8 @@ export class CustomEditorModel extends Disposable implements ICustomEditorModel 
 
 		++this._currentEditIndex;
 		const redoneEdit = this._edits[this._currentEditIndex];
-		this._onRedo.fire(redoneEdit);
+		this._onRedo.fire([redoneEdit]);
 
 		this.updateDirty();
 	}
 }
-
-
